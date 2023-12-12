@@ -4,8 +4,7 @@ import torch
 import pandas as pd
 
 import matplotlib.pyplot as plt
-from matplotlib.patches import Circle
-from matplotlib.colors import LinearSegmentedColormap, Normalize
+from matplotlib.colors import Normalize
 
 
 def create_color_gradient(max_cnts, colormap="viridis"):

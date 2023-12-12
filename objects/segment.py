@@ -39,7 +39,7 @@ import numpy as np
 
 
 def rotate_vector(vector, axis, angle):
-    """ Rotate a vector around an axis by a given angle in radians. """
+    """Rotate a vector around an axis by a given angle in radians."""
     axis = normalize(axis)
     cos_angle = np.cos(angle)
     sin_angle = np.sin(angle)
@@ -47,15 +47,17 @@ def rotate_vector(vector, axis, angle):
     dot_product = np.dot(axis, vector) * (1 - cos_angle)
     return cos_angle * vector + sin_angle * cross_product + dot_product * axis
 
+
 def normalize(v):
-    """ Normalize a vector. """
+    """Normalize a vector."""
     norm = np.linalg.norm(v)
-    if norm == 0: 
+    if norm == 0:
         return v
     return v / norm
 
+
 def generate_vectors_on_cone_surface(R, theta, num_vectors=10):
-    """ Generate vectors on the surface of a cone around R. """
+    """Generate vectors on the surface of a cone around R."""
     R = normalize(R)
     vectors = []
 
@@ -82,19 +84,13 @@ def generate_vectors_on_cone_surface(R, theta, num_vectors=10):
     return np.array(vectors)
 
 
-class Segment: # a basic object corresponding to a line with an origin point, a direction vector and a sensor of motion.
+class Segment:  # a basic object corresponding to a line with an origin point, a direction vector and a sensor of motion.
     def __init__(self, origin, vector, length):
-
         self.O = origin
         self.V = vector
         self.L = length
         self.rays = []
 
-    def gen_ch_rays(self, angle=40, num_samples = 1000):
+    def gen_ch_rays(self, angle=40, num_samples=1000):
         # Sample cone surface
         self.ray_vectors = generate_vectors_on_cone_surface(self.V, angle, num_samples)
-
-
-
-
-
