@@ -16,9 +16,12 @@ from jax import value_and_grad
 from jax import random
 from jax.lax import scan, while_loop
 
+from functools import partial
 
-def normalize(R):
-    return R / jnp.linalg.norm(R)
+
+@jax.jit
+def normalize(vector):
+    return vector / jnp.linalg.norm(vector)
 
 def generate_vectors_on_cone_surface_jax(R, theta, num_vectors=10, key=random.PRNGKey(0)):
     """ Generate vectors on the surface of a cone around R. """
@@ -152,12 +155,8 @@ def generate_data(json_filename, output_filename, cone_opening, track_origin, tr
     pre_idx = 0
     i_evt = 0
 
-    Nphot = 10000
+    Nphot = 100
     ray_vectors, ray_origins = get_rays(track_origin, track_direction, cone_opening, Nphot)
-
-    # Nphot = 10000
-    # ray_vectors = generate_vectors_on_cone_surface_jax(track_direction, np.radians(cone_opening), Nphot)
-    # ray_origins = jnp.ones((Nphot, 3)) * track_origin + np.random.uniform(0, 3, (Nphot, 1))*track_direction
 
     sensor_indices, _, _ = check_hits_vectorized_per_track_jax(np.array(ray_origins, dtype=np.float32),\
                                                        np.array(ray_vectors, dtype=np.float32), \
@@ -202,38 +201,87 @@ def get_rays(track_origin, track_direction, cone_opening, Nphot):
 
     return ray_vectors, ray_origins
 
-def toy_mc_simulator(true_indices, cone_opening, track_origin, track_direction, detector):
-
-    Nphot = 10000
-    ray_vectors, ray_origins = get_rays(track_origin, track_direction, cone_opening, Nphot)
-
-    sensor_indices, hit_flag, photon_end_point = check_hits_vectorized_per_track_jax(
-        jnp.array(ray_origins, dtype=jnp.float32),
-        jnp.array(ray_vectors, dtype=jnp.float32),
-        detector.S_radius,
-        jnp.array(detector.all_points, dtype=jnp.float32)
-    )
-
-    # Count hits per sensor
-    unique_indices, counts = jnp.unique(sensor_indices, return_counts=True)
+@partial(jax.jit, static_argnums=(3,))
+def differentiable_get_rays(track_origin, track_direction, cone_opening, Nphot, key):
+    key, subkey = random.split(key)
+    phi = random.uniform(key, (Nphot,), minval=0, maxval=2*jnp.pi)
+    theta = jnp.radians(cone_opening) * random.uniform(subkey, (Nphot,))
     
-    # Create a histogram of hits
-    simulated_histogram = jnp.zeros(len(detector.all_points), dtype=jnp.int32)
-    simulated_histogram = simulated_histogram.at[unique_indices].set(counts)
+    x = jnp.sin(theta) * jnp.cos(phi)
+    y = jnp.sin(theta) * jnp.sin(phi)
+    z = jnp.cos(theta)
+    
+    ray_vectors = jnp.stack([x, y, z], axis=-1)
+    
+    rotation_matrix = generate_rotation_matrix(track_direction)
+    ray_vectors = jnp.einsum('ij,kj->ki', rotation_matrix, ray_vectors)
+    
+    key, subkey = random.split(key)
+    ray_origins = track_origin + random.uniform(subkey, (Nphot, 1)) * track_direction
+    
+    return ray_vectors, ray_origins
 
-    return simulated_histogram, unique_indices.astype(jnp.int32)
+@jax.jit
+def generate_rotation_matrix(vector):
+    v = normalize(vector)
+    z = jnp.array([0., 0., 1.])
+    axis = jnp.cross(z, v)
+    cos_theta = jnp.dot(z, v)
+    sin_theta = jnp.linalg.norm(axis)
+    
+    # Instead of using an if statement, use jnp.where
+    identity = jnp.eye(3)
+    flipped = jnp.diag(jnp.array([1., 1., -1.]))
+    
+    axis = jnp.where(sin_theta > 1e-6, axis / sin_theta, axis)
+    K = jnp.array([[0, -axis[2], axis[1]],
+                   [axis[2], 0, -axis[0]],
+                   [-axis[1], axis[0], 0]])
+    
+    rotation = identity + sin_theta * K + (1 - cos_theta) * jnp.dot(K, K)
+    
+    return jnp.where(sin_theta > 1e-6, 
+                     rotation, 
+                     jnp.where(cos_theta > 0, identity, flipped))
 
-def calculate_loss(simulated_histogram, true_histogram):
-    # Use mean squared error as the loss function
 
-    print(simulated_histogram)
+@partial(jax.jit, static_argnums=(5,))
+def differentiable_toy_mc_simulator(cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key):
+    ray_vectors, ray_origins = differentiable_get_rays(track_origin, track_direction, cone_opening, Nphot, key)
 
-    print('---')
+    # Reshape ray_origins and ray_vectors
+    ray_origins = ray_origins[:, None, None, :]  # Shape: (Nphot, 1, 1, 3)
+    ray_vectors = ray_vectors[:, None, None, :]  # Shape: (Nphot, 1, 1, 3)
 
-    print(true_histogram)
+    # Create a line parameter array
+    t = jnp.linspace(0, 10, 100)[None, :, None, None]  # Shape: (1, 100, 1, 1)
+
+    # Compute points along the rays
+    points_along_rays = ray_origins + t * ray_vectors  # Shape: (Nphot, 100, 1, 3)
+
+    # Reshape detector_points
+    detector_points = detector_points[None, None, :, :]  # Shape: (1, 1, n_detectors, 3)
+
+    # Compute distances
+    distances = jnp.linalg.norm(points_along_rays - detector_points, axis=-1)  # Shape: (Nphot, 100, n_detectors)
+    
+    min_distances = jnp.min(distances, axis=1)  # Shape: (Nphot, n_detectors)
+    hit_probs = jax.nn.sigmoid(-(min_distances - detector_radius) / 0.01)
+    
+    simulated_histogram = jnp.sum(hit_probs, axis=0)
+    
+    return simulated_histogram
 
 
+@partial(jax.jit, static_argnums=(6,))
+def smooth_loss_function(true_indices, cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key):
+    simulated_histogram = differentiable_toy_mc_simulator(cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key)
+    
+    true_histogram = jnp.zeros(len(detector_points))
+    true_histogram = true_histogram.at[true_indices].add(1)
+    
     return jnp.mean((simulated_histogram - true_histogram)**2)
+
 
 def loss_function(true_indices, cone_opening, track_origin, track_direction, detector):
     simulated_histogram, simulated_indices = toy_mc_simulator(true_indices, cone_opening, track_origin, track_direction, detector)
@@ -281,49 +329,69 @@ def main():
         generate_data(json_filename, output_filename, true_cone_opening, true_track_origin, true_track_direction)
     else:
         print('Inference mode')
+
         detector = generate_detector(json_filename)
         true_indices, _, _, true_cone_opening, true_track_origin, true_track_direction = load_data(output_filename)
         
         # Start with random parameters for inference
-        initial_cone_opening = np.random.uniform(20., 60.)
-        initial_track_origin = np.random.uniform(-0.4, 0.4, size=3)
-        initial_track_direction = normalize(np.random.uniform(-1., 1., size=3))
+        cone_opening = np.random.uniform(20., 60.)
+        track_origin = np.random.uniform(-0.4, 0.4, size=3)
+        track_direction = normalize(np.random.uniform(-1., 1., size=3))
 
-        # Create a function that computes both value and gradient
-        loss_and_grad = jax.value_and_grad(loss_function, argnums=(1, 2, 3))
+        key = random.PRNGKey(0)
 
-        # Compute loss and gradients
-        loss, (grad_cone, grad_origin, grad_direction) = loss_and_grad(
-            true_indices, initial_cone_opening, initial_track_origin, initial_track_direction, detector
-        )
+        Nphot = 100  # or whatever value you want to use
+        detector_points = jnp.array(detector.all_points)
+        detector_radius = detector.S_radius
+
+        loss_and_grad = jax.value_and_grad(smooth_loss_function, argnums=(1, 2, 3))
+
+        # Optimization parameters
+        learning_rate = 0.01
+        num_iterations = 100
 
         print("Initial parameters:")
-        print("Cone opening:", initial_cone_opening)
-        print("Track origin:", initial_track_origin)
-        print("Track direction:", initial_track_direction)
+        print("Cone opening:", cone_opening)
+        print("Track origin:", track_origin)
+        print("Track direction:", track_direction)
 
         print("\nTrue parameters:")
         print("Cone opening:", true_cone_opening)
         print("Track origin:", true_track_origin)
         print("Track direction:", true_track_direction)
 
-        print("\nLoss:", loss)
-        print("Gradient of cone_opening:", grad_cone)
-        print("Gradient of track_origin:", grad_origin)
-        print("Gradient of track_direction:", grad_direction)
+        # Optimization loop
+        for i in range(num_iterations):
+            loss, (grad_cone, grad_origin, grad_direction) = loss_and_grad(
+                true_indices, cone_opening, track_origin, track_direction, 
+                detector_points, detector_radius, Nphot, key
+            )
+            
+            # Update parameters
+            cone_opening = cone_opening - learning_rate * grad_cone
+            track_origin = track_origin - learning_rate * grad_origin
+            track_direction = normalize(track_direction - learning_rate * grad_direction)
+            
+            # Print progress every 10 iterations
+            if i % 10 == 0:
+                print(f"Iteration {i}, Loss: {loss}")
+                print(f"Cone opening: {cone_opening}")
+                print(f"Track origin: {track_origin}")
+                print(f"Track direction: {track_direction}")
+                print()
 
-        # Here you can implement your optimization routine
-        # For example, a simple gradient descent step:
-        learning_rate = 0.01
-        new_cone_opening = initial_cone_opening - learning_rate * grad_cone
-        new_track_origin = initial_track_origin - learning_rate * grad_origin
-        new_track_direction = normalize(initial_track_direction - learning_rate * grad_direction)
+        print("\nOptimization complete.")
+        print("Final parameters:")
+        print(f"Cone opening: {cone_opening}")
+        print(f"Track origin: {track_origin}")
+        print(f"Track direction: {track_direction}")
 
-        print("\nUpdated parameters after one step:")
-        print("Cone opening:", new_cone_opening)
-        print("Track origin:", new_track_origin)
-        print("Track direction:", new_track_direction)
+        print("\nTrue parameters:")
+        print(f"Cone opening: {true_cone_opening}")
+        print(f"Track origin: {true_track_origin}")
+        print(f"Track direction: {true_track_direction}")
 
+        print(f"\nFinal Loss: {loss}")
 
 if __name__ == "__main__":
     stime = time.perf_counter()
