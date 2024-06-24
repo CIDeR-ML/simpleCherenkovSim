@@ -19,6 +19,32 @@ from jax.lax import scan, while_loop
 from functools import partial
 
 
+class Adam:
+    def __init__(self, learning_rate=0.001, beta1=0.9, beta2=0.999, epsilon=1e-8):
+        self.learning_rate = learning_rate
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.epsilon = epsilon
+        self.m = None
+        self.v = None
+        self.t = 0
+
+    def update(self, params, grads):
+        if self.m is None:
+            self.m = [jnp.zeros_like(param) for param in params]
+            self.v = [jnp.zeros_like(param) for param in params]
+
+        self.t += 1
+        new_params = []
+        for i, (param, grad) in enumerate(zip(params, grads)):
+            self.m[i] = self.beta1 * self.m[i] + (1 - self.beta1) * grad
+            self.v[i] = self.beta2 * self.v[i] + (1 - self.beta2) * (grad ** 2)
+            m_hat = self.m[i] / (1 - self.beta1 ** self.t)
+            v_hat = self.v[i] / (1 - self.beta2 ** self.t)
+            new_param = param - self.learning_rate * m_hat / (jnp.sqrt(v_hat) + self.epsilon)
+            new_params.append(new_param)
+        return new_params
+
 @jax.jit
 def normalize(vector):
     return vector / jnp.linalg.norm(vector)
@@ -306,6 +332,53 @@ def loss_function(true_indices, cone_opening, track_origin, track_direction, det
     
     return jnp.mean((simulated_hits - true_hits)**2)
 
+def run_tests(detector, true_indices, detector_points, detector_radius, Nphot):
+    def test_parameter(param_name, true_params, param_range, param_index=None):
+        results = []
+        loss_and_grad = jax.value_and_grad(smooth_loss_function, argnums=(1, 2, 3))
+        
+        for param_value in param_range:
+            if param_name == 'cone_opening':
+                params = [param_value, true_params[1], true_params[2]]
+            elif param_name.startswith('track_origin'):
+                params = list(true_params)
+                params[1] = params[1].at[param_index].set(param_value)
+            elif param_name.startswith('track_direction'):
+                params = list(true_params)
+                params[2] = params[2].at[param_index].set(param_value)
+                params[2] = normalize(params[2])
+            
+            key = random.PRNGKey(0)
+            loss, (grad_cone, grad_origin, grad_direction) = loss_and_grad(
+                true_indices, *params, detector_points, detector_radius, Nphot, key
+            )
+            
+            if param_name == 'cone_opening':
+                grad = grad_cone
+            elif param_name.startswith('track_origin'):
+                grad = grad_origin[param_index]
+            elif param_name.startswith('track_direction'):
+                grad = grad_direction[param_index]
+            
+            results.append((param_value, loss, grad))
+        
+        return results
+
+    # Test 1: Cone opening angle
+    print('Test 1')
+    true_params = [40.0, jnp.array([0., 0., 0.]), jnp.array([1., 0., 0.])]
+    cone_results = test_parameter('cone_opening', true_params, jnp.linspace(20, 60, 41))
+
+    # Test 2: X component of track origin
+    print('Test 2')
+    origin_x_results = test_parameter('track_origin_x', true_params, jnp.linspace(-0.4, 0.4, 41), 0)
+
+    # Test 3: Y component of track direction
+    print('Test 3')
+    direction_y_results = test_parameter('track_direction_y', true_params, jnp.linspace(-0.4, 0.4, 41), 1)
+
+    return cone_results, origin_x_results, direction_y_results
+
 def main():
     # Set default values
     default_json_filename = 'cyl_geom_config.json'
@@ -315,6 +388,7 @@ def main():
     parser = argparse.ArgumentParser(description='Description of your program')
     parser.add_argument('--is_data', type=bool, default=False, help='This creates the data event.')
     parser.add_argument('--json_filename', type=str, default=default_json_filename, help='The JSON filename')
+    parser.add_argument('--test', action='store_true', help='Run tests instead of optimization')
 
     args = parser.parse_args()
     
@@ -327,9 +401,51 @@ def main():
         true_track_origin = np.array([0., 0., 0.])
         true_track_direction = np.array([1., 0., 0.])
         generate_data(json_filename, output_filename, true_cone_opening, true_track_origin, true_track_direction)
+
+    elif args.test:
+        print('Running tests')
+        detector = generate_detector(json_filename)
+        true_indices, _, _, true_cone_opening, true_track_origin, true_track_direction = load_data(output_filename)
+        
+        Nphot = 100
+        detector_points = jnp.array(detector.all_points)
+        detector_radius = detector.S_radius
+
+        cone_results, origin_x_results, direction_y_results = run_tests(
+            detector, true_indices, detector_points, detector_radius, Nphot
+        )
+
+        # Plot and analyze results
+        import matplotlib.pyplot as plt
+
+        def plot_results(figname, results, title, xlabel, true_value):
+            param_values, losses, grads = zip(*results)
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(6, 6), sharex=True)
+            
+            # Plot loss
+            ax1.plot(param_values, losses)
+            ax1.set_ylabel('Loss')
+            ax1.set_title(title)
+            ax1.axvline(x=true_value, color='r', linestyle='--', label='True Value')
+            ax1.legend()
+            
+            # Plot gradient
+            ax2.plot(param_values, grads)
+            ax2.set_ylabel('Gradient')
+            ax2.set_xlabel(xlabel)
+            ax2.axvline(x=true_value, color='r', linestyle='--')
+            
+            plt.tight_layout()
+            plt.savefig(figname)
+            plt.close(fig)  # Close the figure to free up memory
+
+        # In the main function, modify the calls to plot_results:
+        plot_results('test1.pdf', cone_results, 'Cone Opening Angle Test', 'Cone Opening Angle (degrees)', true_cone_opening)
+        plot_results('test2.pdf', origin_x_results, 'Track Origin X Test', 'Track Origin X', true_track_origin[0])
+        plot_results('test3.pdf', direction_y_results, 'Track Direction Y Test', 'Track Direction Y', true_track_direction[1])
+
     else:
         print('Inference mode')
-
         detector = generate_detector(json_filename)
         true_indices, _, _, true_cone_opening, true_track_origin, true_track_direction = load_data(output_filename)
         
@@ -347,19 +463,17 @@ def main():
         loss_and_grad = jax.value_and_grad(smooth_loss_function, argnums=(1, 2, 3))
 
         # Optimization parameters
-        learning_rate = 0.01
-        num_iterations = 100
-
-        print("Initial parameters:")
-        print("Cone opening:", cone_opening)
-        print("Track origin:", track_origin)
-        print("Track direction:", track_direction)
-
-        print("\nTrue parameters:")
-        print("Cone opening:", true_cone_opening)
-        print("Track origin:", true_track_origin)
-        print("Track direction:", true_track_direction)
-
+        num_iterations = 1000
+        patience = 50  # number of iterations to wait before early stopping
+        min_delta = 1e-6  # minimum change in loss to qualify as an improvement
+        
+        # Initialize Adam optimizer
+        adam = Adam(learning_rate=0.01)
+        
+        best_loss = float('inf')
+        best_params = None
+        patience_counter = 0
+        
         # Optimization loop
         for i in range(num_iterations):
             loss, (grad_cone, grad_origin, grad_direction) = loss_and_grad(
@@ -367,10 +481,27 @@ def main():
                 detector_points, detector_radius, Nphot, key
             )
             
-            # Update parameters
-            cone_opening = cone_opening - learning_rate * grad_cone
-            track_origin = track_origin - learning_rate * grad_origin
-            track_direction = normalize(track_direction - learning_rate * grad_direction)
+            # Update parameters using Adam
+            cone_opening, track_origin, track_direction = adam.update(
+                [cone_opening, track_origin, track_direction],
+                [grad_cone, grad_origin, grad_direction]
+            )
+            
+            # Normalize track_direction
+            track_direction = normalize(track_direction)
+            
+            # Check for improvement
+            if loss < best_loss - min_delta:
+                best_loss = loss
+                best_params = (cone_opening, track_origin, track_direction)
+                patience_counter = 0
+            else:
+                patience_counter += 1
+            
+            # Early stopping
+            if patience_counter >= patience:
+                print(f"Early stopping at iteration {i}")
+                break
             
             # Print progress every 10 iterations
             if i % 10 == 0:
@@ -379,6 +510,9 @@ def main():
                 print(f"Track origin: {track_origin}")
                 print(f"Track direction: {track_direction}")
                 print()
+
+        # Use the best parameters found
+        cone_opening, track_origin, track_direction = best_params
 
         print("\nOptimization complete.")
         print("Final parameters:")
@@ -391,7 +525,7 @@ def main():
         print(f"Track origin: {true_track_origin}")
         print(f"Track direction: {true_track_direction}")
 
-        print(f"\nFinal Loss: {loss}")
+        print(f"\nFinal Loss: {best_loss}")
 
 if __name__ == "__main__":
     stime = time.perf_counter()
