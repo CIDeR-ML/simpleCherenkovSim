@@ -23,28 +23,37 @@ def normalize(R):
 def generate_vectors_on_cone_surface_jax(R, theta, num_vectors=10, key=random.PRNGKey(0)):
     """ Generate vectors on the surface of a cone around R. """
     R = normalize(R)
+    
     # Generate random azimuthal angles from 0 to 2pi
     phi_values = random.uniform(key, (num_vectors,), minval=0, maxval=2 * jnp.pi)
-    # Spherical to Cartesian coordinates in the local system
-    x_values = jnp.sin(theta) * jnp.cos(phi_values)
-    y_values = jnp.sin(theta) * jnp.sin(phi_values)
-    z_value = jnp.cos(theta)
-    local_vectors = jnp.column_stack((x_values, y_values, z_value * jnp.ones_like(x_values)))
     
-    # Find rotation axis and angle to align local z-axis with R
-    z_axis = jnp.array([0, 0, 1])
-    axis = jnp.cross(z_axis, R)
-    non_zero_indices = jnp.linalg.norm(axis, axis=-1) != 0  # Check for non-zero norms
+    # Generate vectors in the local coordinate system
+    x_local = jnp.sin(theta) * jnp.cos(phi_values)
+    y_local = jnp.sin(theta) * jnp.sin(phi_values)
+    z_local = jnp.cos(theta) * jnp.ones_like(phi_values)
     
-    # If R is not already along z-axis
-    angles = jnp.arccos(jnp.sum(z_axis * R))
+    local_vectors = jnp.stack([x_local, y_local, z_local], axis=-1)
     
-    # Apply rotation to vectors
-    rotated_vectors = rotate_vector_batch_jax(local_vectors, axis, angles)
+    # Compute the rotation matrix to align [0, 0, 1] with R
+    v = jnp.cross(jnp.array([0., 0., 1.]), R)
+    s = jnp.linalg.norm(v)
+    c = R[2]  # dot product of [0, 0, 1] and R
     
-    # Convert local vectors to global coordinates
-    vectors = rotated_vectors * jnp.linalg.norm(R)
-    return vectors
+    if s == 0:
+        # R is already aligned with [0, 0, 1] or its opposite
+        rotation_matrix = jnp.eye(3) if c > 0 else jnp.diag(jnp.array([1., 1., -1.]))
+    else:
+        v_cross = jnp.array([
+            [0, -v[2], v[1]],
+            [v[2], 0, -v[0]],
+            [-v[1], v[0], 0]
+        ])
+        rotation_matrix = jnp.eye(3) + v_cross + v_cross.dot(v_cross) * (1 - c) / (s ** 2)
+    
+    # Apply the rotation to all vectors
+    rotated_vectors = jnp.dot(local_vectors, rotation_matrix.T)
+    
+    return rotated_vectors
 
 @jax.jit
 def rotate_vector_batch_jax(vectors, axis, angle):
@@ -131,6 +140,10 @@ def generate_data(json_filename, output_filename, cone_opening, track_origin, tr
     h5_evt_pos     = f_outfile.create_dataset("positions",        shape=(Nevents,1,3), dtype=np.float32)
     h5_evt_hit_idx = f_outfile.create_dataset("event_hits_index", shape=(Nevents,),    dtype=np.int64)
 
+    f_outfile.create_dataset("true_cone_opening", data=np.array([cone_opening]))
+    f_outfile.create_dataset("true_track_origin", data=track_origin)
+    f_outfile.create_dataset("true_track_direction", data=track_direction)
+
     maxNhits = Nevents * N_photosensors
     h5_evt_hit_IDs_max = np.zeros(maxNhits)
     h5_evt_hit_Qs_max  = np.zeros(maxNhits)
@@ -138,31 +151,36 @@ def generate_data(json_filename, output_filename, cone_opening, track_origin, tr
 
     pre_idx = 0
     i_evt = 0
-    for i_trk in range(Ntrk):
-        Nphot = 10000
-        ray_vectors = generate_vectors_on_cone_surface_jax(track_direction, np.radians(cone_opening), Nphot)
-        ray_origins = np.ones((Nphot, 3)) * track_origin + 0.2*10*track_direction
 
-        sensor_indices, _, _ = check_hits_vectorized_per_track_jax(np.array(ray_origins, dtype=np.float32),\
-                                                           np.array(ray_vectors, dtype=np.float32), \
-                                                           detector.S_radius, \
-                                                           np.array(detector.all_points,dtype=np.float32))
+    Nphot = 10000
+    ray_vectors, ray_origins = get_rays(track_origin, track_direction, cone_opening, Nphot)
 
-        idx, cts = np.unique(sensor_indices, return_counts=True)
-        Nhits += len(idx)
-        h5_evt_hit_idx[i_evt] = Nhits
-        h5_evt_hit_IDs_max[pre_idx:Nhits] = idx
-        h5_evt_hit_Qs_max [pre_idx:Nhits] = cts
-        h5_evt_hit_Ts_max [pre_idx:Nhits] = np.zeros(len(cts))
-        pre_idx = Nhits
+    # Nphot = 10000
+    # ray_vectors = generate_vectors_on_cone_surface_jax(track_direction, np.radians(cone_opening), Nphot)
+    # ray_origins = jnp.ones((Nphot, 3)) * track_origin + np.random.uniform(0, 3, (Nphot, 1))*track_direction
 
-        h5_evt_hit_IDs = f_outfile.create_dataset("hit_pmt",          shape=(Nhits,),      dtype=np.int32)
-        h5_evt_hit_Qs  = f_outfile.create_dataset("hit_charge",       shape=(Nhits,),      dtype=np.float32)
-        h5_evt_hit_Ts  = f_outfile.create_dataset("hit_time",         shape=(Nhits,),      dtype=np.float32)
+    sensor_indices, _, _ = check_hits_vectorized_per_track_jax(np.array(ray_origins, dtype=np.float32),\
+                                                       np.array(ray_vectors, dtype=np.float32), \
+                                                       detector.S_radius, \
+                                                       np.array(detector.all_points,dtype=np.float32))
 
-        h5_evt_hit_IDs[0:Nhits] = h5_evt_hit_IDs_max[0:Nhits]
-        h5_evt_hit_Qs[0:Nhits]  = h5_evt_hit_Qs_max [0:Nhits]
-        h5_evt_hit_Ts[0:Nhits]  = h5_evt_hit_Ts_max [0:Nhits]
+    idx, cts = np.unique(sensor_indices, return_counts=True)
+    Nhits += len(idx)
+    h5_evt_hit_idx[i_evt] = Nhits
+    h5_evt_hit_IDs_max[pre_idx:Nhits] = idx
+    h5_evt_hit_Qs_max [pre_idx:Nhits] = cts
+    h5_evt_hit_Ts_max [pre_idx:Nhits] = np.zeros(len(cts))
+    pre_idx = Nhits
+
+    h5_evt_hit_IDs = f_outfile.create_dataset("hit_pmt",          shape=(Nhits,),      dtype=np.int32)
+    h5_evt_hit_Qs  = f_outfile.create_dataset("hit_charge",       shape=(Nhits,),      dtype=np.float32)
+    h5_evt_hit_Ts  = f_outfile.create_dataset("hit_time",         shape=(Nhits,),      dtype=np.float32)
+
+    h5_evt_hit_IDs[0:Nhits] = h5_evt_hit_IDs_max[0:Nhits]
+    h5_evt_hit_Qs[0:Nhits]  = h5_evt_hit_Qs_max [0:Nhits]
+    h5_evt_hit_Ts[0:Nhits]  = h5_evt_hit_Ts_max [0:Nhits]
+
+    print(sensor_indices)
 
     f_outfile.close()
     print('Data generation complete.')
@@ -172,12 +190,22 @@ def load_data(filename):
         hit_pmt = np.array(f['hit_pmt'])
         hit_charge = np.array(f['hit_charge'])
         hit_time = np.array(f['hit_time'])
-    return hit_pmt, hit_charge, hit_time
+        true_cone_opening = np.array(f['true_cone_opening'])[0]
+        true_track_origin = np.array(f['true_track_origin'])
+        true_track_direction = np.array(f['true_track_direction'])
+    return hit_pmt, hit_charge, hit_time, true_cone_opening, true_track_origin, true_track_direction
+
+def get_rays(track_origin, track_direction, cone_opening, Nphot):
+
+    ray_vectors = generate_vectors_on_cone_surface_jax(track_direction, jnp.radians(cone_opening), Nphot)
+    ray_origins = jnp.ones((Nphot, 3)) * track_origin + np.random.uniform(0, 1, (Nphot, 1))*track_direction
+
+    return ray_vectors, ray_origins
 
 def toy_mc_simulator(true_indices, cone_opening, track_origin, track_direction, detector):
+
     Nphot = 10000
-    ray_vectors = generate_vectors_on_cone_surface_jax(track_direction, jnp.radians(cone_opening), Nphot)
-    ray_origins = jnp.ones((Nphot, 3)) * track_origin + 0.2*10*track_direction
+    ray_vectors, ray_origins = get_rays(track_origin, track_direction, cone_opening, Nphot)
 
     sensor_indices, hit_flag, photon_end_point = check_hits_vectorized_per_track_jax(
         jnp.array(ray_origins, dtype=jnp.float32),
@@ -204,7 +232,7 @@ def calculate_loss(simulated_histogram, true_histogram):
 
     print(true_histogram)
 
-    
+
     return jnp.mean((simulated_histogram - true_histogram)**2)
 
 def loss_function(true_indices, cone_opening, track_origin, track_direction, detector):
@@ -224,6 +252,9 @@ def loss_function(true_indices, cone_opening, track_origin, track_direction, det
     
     print("Shape of true_hits:", true_hits.shape)
     print("Shape of simulated_hits:", simulated_hits.shape)
+
+    print(true_hits[0:100])
+    print(simulated_hits[0:100])
     
     return jnp.mean((simulated_hits - true_hits)**2)
 
@@ -241,38 +272,58 @@ def main():
     
     json_filename = args.json_filename
 
-    cone_opening = 40.
-    track_origin = np.array([0., 0., 0.])
-    track_direction = np.array([0., 1., 1.])
-
     if args.is_data:
         print('Using data mode')
-        generate_data(json_filename, output_filename, cone_opening, track_origin, track_direction)
+        # Use specific parameters for data generation
+        true_cone_opening = 40.
+        true_track_origin = np.array([0., 0., 0.])
+        true_track_direction = np.array([1., 0., 0.])
+        generate_data(json_filename, output_filename, true_cone_opening, true_track_origin, true_track_direction)
     else:
         print('Inference mode')
         detector = generate_detector(json_filename)
-        true_indices, _, _ = load_data(output_filename)
+        true_indices, _, _, true_cone_opening, true_track_origin, true_track_direction = load_data(output_filename)
         
-        # Convert true_indices to a histogram
-        true_histogram, _ = jnp.unique(true_indices, return_counts=True)
-        
+        # Start with random parameters for inference
+        initial_cone_opening = np.random.uniform(20., 60.)
+        initial_track_origin = np.random.uniform(-0.4, 0.4, size=3)
+        initial_track_direction = normalize(np.random.uniform(-1., 1., size=3))
+
         # Create a function that computes both value and gradient
         loss_and_grad = jax.value_and_grad(loss_function, argnums=(1, 2, 3))
 
-        # Initial parameter values
-        cone_opening = 40.
-        track_origin = jnp.array([0., 0., 0.])
-        track_direction = jnp.array([0., 1., 1.])
-
         # Compute loss and gradients
         loss, (grad_cone, grad_origin, grad_direction) = loss_and_grad(
-            true_indices, cone_opening, track_origin, track_direction, detector
+            true_indices, initial_cone_opening, initial_track_origin, initial_track_direction, detector
         )
 
-    print("Loss:", loss)
-    print("Gradient of cone_opening:", grad_cone)
-    print("Gradient of track_origin:", grad_origin)
-    print("Gradient of track_direction:", grad_direction)
+        print("Initial parameters:")
+        print("Cone opening:", initial_cone_opening)
+        print("Track origin:", initial_track_origin)
+        print("Track direction:", initial_track_direction)
+
+        print("\nTrue parameters:")
+        print("Cone opening:", true_cone_opening)
+        print("Track origin:", true_track_origin)
+        print("Track direction:", true_track_direction)
+
+        print("\nLoss:", loss)
+        print("Gradient of cone_opening:", grad_cone)
+        print("Gradient of track_origin:", grad_origin)
+        print("Gradient of track_direction:", grad_direction)
+
+        # Here you can implement your optimization routine
+        # For example, a simple gradient descent step:
+        learning_rate = 0.01
+        new_cone_opening = initial_cone_opening - learning_rate * grad_cone
+        new_track_origin = initial_track_origin - learning_rate * grad_origin
+        new_track_direction = normalize(initial_track_direction - learning_rate * grad_direction)
+
+        print("\nUpdated parameters after one step:")
+        print("Cone opening:", new_cone_opening)
+        print("Track origin:", new_track_origin)
+        print("Track direction:", new_track_direction)
+
 
 if __name__ == "__main__":
     stime = time.perf_counter()
