@@ -153,9 +153,9 @@ def check_hits_vectorized_per_track_jax(ray_origin, ray_direction, sensor_radius
     # Get the good indices based on sensor_radius
     sensor_indices = indices[hit_flag]
 
-    hit_times = jnp.where(hit_flag, t_values[jnp.arange(indices.size), indices], jnp.inf)
+    #hit_times = jnp.where(hit_flag, t_values[jnp.arange(indices.size), indices], jnp.inf)
 
-    return sensor_indices, hit_flag, closest_points_on_ray, hit_times
+    return sensor_indices, hit_flag, closest_points_on_ray#, hit_times
 
 def generate_data(json_filename, output_filename, cone_opening, track_origin, track_direction):
     # Generate detector (photsensor placements)
