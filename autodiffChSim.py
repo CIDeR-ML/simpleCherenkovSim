@@ -18,6 +18,7 @@ from jax.lax import scan, while_loop
 
 from functools import partial
 
+Nphot = 100
 
 class Adam:
     def __init__(self, learning_rate=0.001, beta1=0.9, beta2=0.999, epsilon=1e-8):
@@ -48,41 +49,6 @@ class Adam:
 @jax.jit
 def normalize(vector):
     return vector / jnp.linalg.norm(vector)
-
-# def generate_vectors_on_cone_surface_jax(R, theta, num_vectors=10, key=random.PRNGKey(0)):
-#     """ Generate vectors on the surface of a cone around R. """
-#     R = normalize(R)
-    
-#     # Generate random azimuthal angles from 0 to 2pi
-#     phi_values = random.uniform(key, (num_vectors,), minval=0, maxval=2 * jnp.pi)
-    
-#     # Generate vectors in the local coordinate system
-#     x_local = jnp.sin(theta) * jnp.cos(phi_values)
-#     y_local = jnp.sin(theta) * jnp.sin(phi_values)
-#     z_local = jnp.cos(theta) * jnp.ones_like(phi_values)
-    
-#     local_vectors = jnp.stack([x_local, y_local, z_local], axis=-1)
-    
-#     # Compute the rotation matrix to align [0, 0, 1] with R
-#     v = jnp.cross(jnp.array([0., 0., 1.]), R)
-#     s = jnp.linalg.norm(v)
-#     c = R[2]  # dot product of [0, 0, 1] and R
-    
-#     if s == 0:
-#         # R is already aligned with [0, 0, 1] or its opposite
-#         rotation_matrix = jnp.eye(3) if c > 0 else jnp.diag(jnp.array([1., 1., -1.]))
-#     else:
-#         v_cross = jnp.array([
-#             [0, -v[2], v[1]],
-#             [v[2], 0, -v[0]],
-#             [-v[1], v[0], 0]
-#         ])
-#         rotation_matrix = jnp.eye(3) + v_cross + v_cross.dot(v_cross) * (1 - c) / (s ** 2)
-    
-#     # Apply the rotation to all vectors
-#     rotated_vectors = jnp.dot(local_vectors, rotation_matrix.T)
-    
-#     return rotated_vectors
 
 @partial(jax.jit, static_argnums=(2,))
 def generate_vectors_on_cone_surface_jax(R, theta, num_vectors=10, key=random.PRNGKey(0)):
@@ -187,7 +153,9 @@ def check_hits_vectorized_per_track_jax(ray_origin, ray_direction, sensor_radius
     # Get the good indices based on sensor_radius
     sensor_indices = indices[hit_flag]
 
-    return sensor_indices, hit_flag, closest_points_on_ray
+    hit_times = jnp.where(hit_flag, t_values[jnp.arange(indices.size), indices], jnp.inf)
+
+    return sensor_indices, hit_flag, closest_points_on_ray, hit_times
 
 def generate_data(json_filename, output_filename, cone_opening, track_origin, track_direction):
     # Generate detector (photsensor placements)
@@ -199,6 +167,8 @@ def generate_data(json_filename, output_filename, cone_opening, track_origin, tr
     Nhits = 0 # this is a counter used to keep track on how many hits we have filled in total for every event.
     Nevents = 1
     Ntrk    = 1
+
+    os.makedirs(os.path.dirname(output_filename), exist_ok=True)
 
     # Create the output h5 file and define some fields we can start filling.
     f_outfile = h5py.File(output_filename, 'w')
@@ -217,8 +187,6 @@ def generate_data(json_filename, output_filename, cone_opening, track_origin, tr
 
     pre_idx = 0
     i_evt = 0
-
-    Nphot = 1000
     ray_vectors, ray_origins = get_rays(track_origin, track_direction, cone_opening, Nphot)
 
     sensor_indices, _, _ = check_hits_vectorized_per_track_jax(np.array(ray_origins, dtype=np.float32),\
@@ -306,6 +274,8 @@ def generate_rotation_matrix(vector):
 
 def generate_and_store_event(filename, cone_opening, track_origin, track_direction, detector, Nphot):
     N_photosensors = len(detector.all_points)
+
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
 
     # Create the output h5 file
     with h5py.File(filename, 'w') as f_outfile:
@@ -547,7 +517,6 @@ def main():
         detector = generate_detector(json_filename)
         true_indices, _, _, true_cone_opening, true_track_origin, true_track_direction = load_data(output_filename)
         
-        Nphot = 1000  # Increase number of photons
         detector_points = jnp.array(detector.all_points)
         detector_radius = detector.S_radius
         
@@ -605,7 +574,6 @@ def main():
 
         key = random.PRNGKey(0)
 
-        Nphot = 1000  # or whatever value you want to use
         detector_points = jnp.array(detector.all_points)
         detector_radius = detector.S_radius
 
