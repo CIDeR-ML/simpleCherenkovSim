@@ -235,6 +235,9 @@ def load_data(filename):
         true_cone_opening = np.array(f['true_cone_opening'])[0]
         true_track_origin = np.array(f['true_track_origin'])
         true_track_direction = np.array(f['true_track_direction'])
+
+    print(hit_time)
+
     return hit_pmt, hit_charge, hit_time, true_cone_opening, true_track_origin, true_track_direction
 
 def get_rays(track_origin, track_direction, cone_opening, Nphot):
@@ -391,8 +394,31 @@ def generate_and_store_event(filename, cone_opening, track_origin, track_directi
         h5_evt_hit_Qs[:] = cts
         h5_evt_hit_Ts[:] = [np.mean(photon_times[valid_sensor_indices == i]) for i in idx]
 
+        print(h5_evt_hit_Ts[:])
+
     return filename
 
+
+# @partial(jax.jit, static_argnums=(7,))
+# def smooth_time_based_loss_function(true_indices, true_times, cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key):
+#     _, closest_detector_indices, photon_times = differentiable_toy_mc_simulator(
+#         cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key
+#     )
+    
+#     simulated_times = jnp.zeros(len(detector_points))
+#     hit_counts = jnp.zeros(len(detector_points))
+    
+#     simulated_times = simulated_times.at[closest_detector_indices].add(photon_times)
+#     hit_counts = hit_counts.at[closest_detector_indices].add(1)
+    
+#     average_simulated_times = jnp.where(hit_counts > 0, simulated_times / hit_counts, 0)
+    
+#     true_time_array = jnp.zeros(len(detector_points))
+#     true_time_array = true_time_array.at[true_indices].set(true_times)
+    
+#     time_diff = jnp.abs(average_simulated_times - true_time_array)
+    
+#     return jnp.mean(time_diff[true_indices])
 
 @partial(jax.jit, static_argnums=(7,))
 def smooth_time_based_loss_function(true_indices, true_times, cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key):
@@ -400,21 +426,27 @@ def smooth_time_based_loss_function(true_indices, true_times, cone_opening, trac
         cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key
     )
     
-    simulated_times = jnp.zeros(len(detector_points))
-    hit_counts = jnp.zeros(len(detector_points))
+    # Create arrays for true hit positions and times
+    true_hit_positions = detector_points[true_indices]
+    true_hit_times = true_times
     
-    simulated_times = simulated_times.at[closest_detector_indices].add(photon_times)
-    hit_counts = hit_counts.at[closest_detector_indices].add(1)
+    # Get simulated hit positions
+    simulated_hit_positions = detector_points[closest_detector_indices]
     
-    average_simulated_times = jnp.where(hit_counts > 0, simulated_times / hit_counts, 0)
+    # Calculate distances between simulated hits and true hits
+    distances = jnp.linalg.norm(simulated_hit_positions[:, None, :] - true_hit_positions[None, :, :], axis=-1)
     
-    true_time_array = jnp.zeros(len(detector_points))
-    true_time_array = true_time_array.at[true_indices].set(true_times)
+    # Find the index of the closest true hit for each simulated hit
+    closest_true_hit_indices = jnp.argmin(distances, axis=1)
     
-    time_diff = jnp.abs(average_simulated_times - true_time_array)
+    # Get the times of the closest true hits
+    closest_true_hit_times = true_hit_times[closest_true_hit_indices]
     
-    return jnp.mean(time_diff[true_indices])
-
+    # Calculate time differences
+    time_differences = jnp.abs(photon_times - closest_true_hit_times)
+    
+    # Return the mean of these time differences as the loss
+    return jnp.mean(time_differences)
 
 @partial(jax.jit, static_argnums=(5,6))
 def differentiable_toy_mc_simulator(cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key):
