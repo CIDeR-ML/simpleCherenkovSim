@@ -437,6 +437,8 @@ def differentiable_toy_mc_simulator(cone_opening, track_origin, track_direction,
 
 @partial(jax.jit, static_argnums=(7, 9))
 def combined_loss_function(true_indices, true_times, cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key, use_time_loss):
+    #use_time_loss = True
+    print(use_time_loss)
     return jax.lax.cond(
         use_time_loss,
         lambda: smooth_time_based_loss_function(true_indices, true_times, cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key),
@@ -638,7 +640,7 @@ def main():
         detector_points = jnp.array(detector.all_points)
         detector_radius = detector.S_radius
 
-        loss_and_grad = jax.value_and_grad(combined_loss_function, argnums=(1, 2, 3))
+        loss_and_grad = jax.value_and_grad(combined_loss_function, argnums=(2, 3, 4))
 
         # Optimization parameters
         num_iterations = 1000
