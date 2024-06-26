@@ -22,7 +22,7 @@ import warnings
 
 warnings.filterwarnings("ignore", message="unhashable type: .*. Attempting to hash a tracer will lead to an error in a future JAX release.")
 
-Nphot = 100
+Nphot = 500
 
 class Adam:
     def __init__(self, learning_rate=0.001, beta1=0.9, beta2=0.999, epsilon=1e-8):
@@ -398,56 +398,6 @@ def generate_and_store_event(filename, cone_opening, track_origin, track_directi
 
     return filename
 
-
-# @partial(jax.jit, static_argnums=(7,))
-# def smooth_time_based_loss_function(true_indices, true_times, cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key):
-#     _, closest_detector_indices, photon_times = differentiable_toy_mc_simulator(
-#         cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key
-#     )
-    
-#     simulated_times = jnp.zeros(len(detector_points))
-#     hit_counts = jnp.zeros(len(detector_points))
-    
-#     simulated_times = simulated_times.at[closest_detector_indices].add(photon_times)
-#     hit_counts = hit_counts.at[closest_detector_indices].add(1)
-    
-#     average_simulated_times = jnp.where(hit_counts > 0, simulated_times / hit_counts, 0)
-    
-#     true_time_array = jnp.zeros(len(detector_points))
-#     true_time_array = true_time_array.at[true_indices].set(true_times)
-    
-#     time_diff = jnp.abs(average_simulated_times - true_time_array)
-    
-#     return jnp.mean(time_diff[true_indices])
-
-@partial(jax.jit, static_argnums=(7,))
-def smooth_time_based_loss_function(true_indices, true_times, cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key):
-    _, closest_detector_indices, photon_times = differentiable_toy_mc_simulator(
-        cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key
-    )
-    
-    # Create arrays for true hit positions and times
-    true_hit_positions = detector_points[true_indices]
-    true_hit_times = true_times
-    
-    # Get simulated hit positions
-    simulated_hit_positions = detector_points[closest_detector_indices]
-    
-    # Calculate distances between simulated hits and true hits
-    distances = jnp.linalg.norm(simulated_hit_positions[:, None, :] - true_hit_positions[None, :, :], axis=-1)
-    
-    # Find the index of the closest true hit for each simulated hit
-    closest_true_hit_indices = jnp.argmin(distances, axis=1)
-    
-    # Get the times of the closest true hits
-    closest_true_hit_times = true_hit_times[closest_true_hit_indices]
-    
-    # Calculate time differences
-    time_differences = jnp.abs(photon_times - closest_true_hit_times)
-    
-    # Return the mean of these time differences as the loss
-    return jnp.mean(time_differences)
-
 @partial(jax.jit, static_argnums=(5,6))
 def differentiable_toy_mc_simulator(cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key):
     ray_vectors, ray_origins = differentiable_get_rays(track_origin, track_direction, cone_opening, Nphot, key)
@@ -469,8 +419,6 @@ def differentiable_toy_mc_simulator(cone_opening, track_origin, track_direction,
 
 @partial(jax.jit, static_argnums=(7, 9))
 def combined_loss_function(true_indices, true_times, cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key, use_time_loss):
-    #use_time_loss = True
-    print(use_time_loss)
     return jax.lax.cond(
         use_time_loss,
         lambda: smooth_time_based_loss_function(true_indices, true_times, cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key),
@@ -495,6 +443,57 @@ def smooth_distance_based_loss_function(true_indices, cone_opening, track_origin
     
     # Return the mean of these soft minimum distances as the loss
     return jnp.mean(soft_min_distances)
+
+@partial(jax.jit, static_argnums=(7,))
+def smooth_time_based_loss_function(true_indices, true_times, cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key):
+    simulated_points, closest_detector_indices, photon_times = differentiable_toy_mc_simulator(
+        cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key
+    )
+    
+    true_hit_positions = detector_points[true_indices]
+    
+    # Compute distances from each simulated point to all true hit positions
+    distances = jnp.linalg.norm(simulated_points[:, None, :] - true_hit_positions[None, :, :], axis=-1)
+    
+    # Use softmin for a smooth approximation of the closest hit
+    soft_weights = jax.nn.softmax(-distances / 0.1, axis=1)  # Temperature parameter can be adjusted
+    
+    # Compute weighted average of true hit times
+    weighted_true_times = jnp.sum(soft_weights * true_times[None, :], axis=1)
+    
+    # Calculate time differences
+    time_differences = jnp.abs(photon_times - weighted_true_times)
+    
+    # Return the mean of these time differences as the loss
+    return jnp.mean(time_differences)
+
+
+@partial(jax.jit, static_argnums=(7,))
+def smooth_combined_loss_function(true_indices, true_times, cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key):
+    simulated_points, closest_detector_indices, photon_times = differentiable_toy_mc_simulator(
+        cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key
+    )
+    
+    true_hit_positions = detector_points[true_indices]
+    
+    # Compute distances from each simulated point to all true hit positions
+    distances = jnp.linalg.norm(simulated_points[:, None, :] - true_hit_positions[None, :, :], axis=-1)
+    
+    # Use softmin instead of min
+    soft_min_distances = jax.vmap(softmin)(distances)
+
+    # Use softmin for a smooth approximation of the closest hit
+    soft_weights = jax.nn.softmax(-distances / 0.1, axis=1)  # Temperature parameter can be adjusted
+    
+    # Compute weighted average of true hit times
+    weighted_true_times = jnp.sum(soft_weights * true_times[None, :], axis=1)
+    
+    # Calculate time differences
+    time_differences = jnp.abs(photon_times - weighted_true_times)
+    
+    # Return the mean of these time differences as the loss
+    return jnp.mean(time_differences)+jnp.mean(soft_min_distances)
+
 
 def loss_function(true_indices, cone_opening, track_origin, track_direction, detector):
     simulated_histogram, simulated_indices = toy_mc_simulator(true_indices, cone_opening, track_origin, track_direction, detector)
