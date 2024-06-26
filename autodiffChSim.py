@@ -22,7 +22,7 @@ import warnings
 
 warnings.filterwarnings("ignore", message="unhashable type: .*. Attempting to hash a tracer will lead to an error in a future JAX release.")
 
-Nphot = 500
+Nphot = 100
 
 class Adam:
     def __init__(self, learning_rate=0.001, beta1=0.9, beta2=0.999, epsilon=1e-8):
@@ -419,11 +419,13 @@ def differentiable_toy_mc_simulator(cone_opening, track_origin, track_direction,
 
 @partial(jax.jit, static_argnums=(7, 9))
 def combined_loss_function(true_indices, true_times, cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key, use_time_loss):
-    return jax.lax.cond(
-        use_time_loss,
-        lambda: smooth_time_based_loss_function(true_indices, true_times, cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key),
-        lambda: smooth_distance_based_loss_function(true_indices, cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key)
-    )
+    return smooth_combined_loss_function(true_indices, true_times, cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key)
+
+    # return jax.lax.cond(
+    #     use_time_loss,
+    #     lambda: smooth_time_based_loss_function(true_indices, true_times, cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key),
+    #     lambda: smooth_distance_based_loss_function(true_indices, cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key)
+    # )
 
 def softmin(x, alpha=1.0):
     exp_x = jnp.exp(-alpha * x)
@@ -662,8 +664,13 @@ def main():
         true_indices, _, true_times, true_cone_opening, true_track_origin, true_track_direction = load_data(output_filename)
         
         # Start with random parameters for inference
-        cone_opening = np.random.uniform(20., 60.)
-        track_origin = np.random.uniform(-0.4, 0.4, size=3)
+        # cone_opening = np.random.uniform(40., 40)
+        # track_origin = np.random.uniform(-0., 0., size=3)
+        # #track_direction = normalize(np.random.uniform(-1., 1., size=3))
+        # track_direction = normalize(np.array([0,1,0]))
+
+        cone_opening = np.random.uniform(30., 50)
+        track_origin = np.random.uniform(-0., 0., size=3)
         track_direction = normalize(np.random.uniform(-1., 1., size=3))
 
         key = random.PRNGKey(0)
@@ -691,28 +698,37 @@ def main():
                 true_indices, true_times, cone_opening, track_origin, track_direction, 
                 detector_points, detector_radius, Nphot, key, args.use_time_loss
             )
-            
-            # Update parameters using Adam
-            cone_opening, track_origin, track_direction = adam.update(
-                [cone_opening, track_origin, track_direction],
-                [grad_cone, grad_origin, grad_direction]
-            )
+
+
+            cone_opening -= 10*grad_cone
+            track_origin -= 0.1*grad_origin
+            track_direction -= 0.1*grad_direction
+
+
+            #print(grad_direction)
+
+
+            # # Update parameters using Adam
+            # cone_opening, track_origin, track_direction = adam.update(
+            #     [cone_opening, track_origin, track_direction],
+            #     [grad_cone, grad_origin, grad_direction]
+            # )
             
             # Normalize track_direction
             track_direction = normalize(track_direction)
             
-            # Check for improvement
-            if loss < best_loss - min_delta:
-                best_loss = loss
-                best_params = (cone_opening, track_origin, track_direction)
-                patience_counter = 0
-            else:
-                patience_counter += 1
+            # # Check for improvement
+            # if loss < best_loss - min_delta:
+            #     best_loss = loss
+            #     best_params = (cone_opening, track_origin, track_direction)
+            #     patience_counter = 0
+            # else:
+            #     patience_counter += 1
             
-            # Early stopping
-            if patience_counter >= patience:
-                print(f"Early stopping at iteration {i}")
-                break
+            # # Early stopping
+            # if patience_counter >= patience:
+            #     print(f"Early stopping at iteration {i}")
+            #     break
             
             # Print progress every 10 iterations
             if i % 10 == 0:
