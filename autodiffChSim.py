@@ -20,9 +20,100 @@ from functools import partial
 
 import warnings
 
+import matplotlib.pyplot as plt
+
 warnings.filterwarnings("ignore", message="unhashable type: .*. Attempting to hash a tracer will lead to an error in a future JAX release.")
 
 Nphot = 100
+
+def relative_angle(vector1, vector2):
+    dot_product = np.dot(vector1, vector2)
+    magnitude_vector1 = np.linalg.norm(vector1)
+    magnitude_vector2 = np.linalg.norm(vector2)
+    cosine_angle = dot_product / (magnitude_vector1 * magnitude_vector2)
+
+    angle_radians = np.arccos(cosine_angle)
+    angle_degrees = np.degrees(angle_radians)
+
+    return angle_degrees
+
+
+class Logger:
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.origins         = []
+        self.directions      = []
+        self.losses          = []
+        self.dir_err         = []
+        self.ori_err         = []
+        self.ch_angles       = []
+        self.ch_angles_err   = []
+
+    def add_data(self, origin, direction, true_dir, true_ori, ch_angle, true_ch_angle, loss):
+        self.origins.append(origin)
+        self.directions.append(direction)
+        self.losses.append(float(loss))
+        self.dir_err.append(relative_angle(true_dir, direction))
+        print('dir error: ', true_dir, direction, self.dir_err[-1])
+        self.ori_err.append(50.*np.linalg.norm(true_ori-origin))
+        self.ch_angles.append(ch_angle)
+        self.ch_angles_err.append(true_ch_angle-ch_angle)
+
+    def plot_err(self):
+        plt.plot(range(len(self.ori_err[1:])), self.ori_err[1:], label='distance (a.u.)', color='cornflowerblue')
+        plt.plot(range(len(self.dir_err[1:])), self.dir_err[1:], label='angle (degrees) ', color='darkorange')
+        plt.gca().set_xlabel('Iterations')
+        plt.gca().set_ylabel('Error')
+        plt.xlim(0, len(self.losses))
+        plt.ylim(bottom=-0.1, top=max(max(self.ori_err[1:]), max(self.dir_err[1:])) * 1.3) # Adjust y-axis limits
+        plt.legend(frameon=False, loc='best')
+        plt.ylim(bottom=0.)
+
+    # def plot_norm(self):
+    #     plt.plot(range(len(self.norms[1:])), self.norms[1:], color='limegreen')
+    #     plt.gca().set_xlabel('Iterations')
+    #     plt.gca().set_ylabel('Normalization')
+    #     plt.axhline(self.expected_norm, color = 'darkgray', linestyle = '--', label='expected')
+    #     plt.xlim(0, len(self.losses))
+    #     plt.ylim(bottom=min(self.expected_norm, min(self.norms[1:])) / 1.43, top=max(self.expected_norm, max(self.norms[1:])) * 1.3) # Adjust y-axis limits
+    #     plt.legend(frameon=False, loc='best')
+
+    def plot_ch_angle(self):
+        self.expected_cone_opening = 40
+        plt.plot(range(len(self.ch_angles[1:])), self.ch_angles[1:], color='hotpink')
+        plt.axhline(self.expected_cone_opening, color = 'darkgray', linestyle = '--', label='expected')
+        plt.xlim(1, len(self.losses))
+        plt.ylim(bottom=min(self.expected_cone_opening, min(self.ch_angles[1:])) / 1.43, top=max(self.expected_cone_opening, max(self.ch_angles[1:])) * 1.3) # Adjust y-axis limits
+        plt.gca().set_xlabel('Iterations')
+        plt.gca().set_ylabel('Cone Opening')
+        plt.legend(frameon=False, loc='best')
+
+    def plot_loss(self):
+        plt.plot(range(len(self.losses[1:])), self.losses[1:], color='k')
+        plt.gca().set_xlabel('Iterations')
+        plt.gca().set_ylabel('Loss')
+        plt.xlim(0, len(self.losses))
+        plt.yscale('log')
+
+    def plot_all(self):
+        plt.figure(figsize=(8, 6))
+
+        plt.subplot(2, 2, 1)
+        self.plot_err()
+
+        plt.subplot(2, 2, 2)
+        self.plot_ch_angle()
+
+        plt.subplot(2, 2, 3)
+        self.plot_loss()
+
+        plt.subplot(2, 2, 4)
+        plt.gca().axis('off')
+
+        plt.tight_layout()
+        plt.show()
 
 class Adam:
     def __init__(self, learning_rate=0.001, beta1=0.9, beta2=0.999, epsilon=1e-8):
@@ -663,6 +754,8 @@ def main():
         detector = generate_detector(json_filename)
         true_indices, _, true_times, true_cone_opening, true_track_origin, true_track_direction = load_data(output_filename)
         
+        log = Logger()
+
         # Start with random parameters for inference
         # cone_opening = np.random.uniform(40., 40)
         # track_origin = np.random.uniform(-0., 0., size=3)
@@ -670,7 +763,7 @@ def main():
         # track_direction = normalize(np.array([0,1,0]))
 
         cone_opening = np.random.uniform(30., 50)
-        track_origin = np.random.uniform(-0., 0., size=3)
+        track_origin = np.random.uniform(-1., 1., size=3)
         track_direction = normalize(np.random.uniform(-1., 1., size=3))
 
         key = random.PRNGKey(0)
@@ -681,7 +774,7 @@ def main():
         loss_and_grad = jax.value_and_grad(combined_loss_function, argnums=(2, 3, 4))
 
         # Optimization parameters
-        num_iterations = 1000
+        num_iterations = 100
         patience = 50  # number of iterations to wait before early stopping
         min_delta = 1e-6  # minimum change in loss to qualify as an improvement
         
@@ -702,8 +795,9 @@ def main():
 
             cone_opening -= 10*grad_cone
             track_origin -= 0.1*grad_origin
-            track_direction -= 0.1*grad_direction
+            track_direction -= 0.05*grad_direction
 
+            log.add_data(track_origin, track_direction, true_track_direction, true_track_origin, cone_opening, true_cone_opening, loss)
 
             #print(grad_direction)
 
@@ -738,8 +832,8 @@ def main():
                 print(f"Track direction: {track_direction}")
                 print()
 
-        # Use the best parameters found
-        cone_opening, track_origin, track_direction = best_params
+        # # Use the best parameters found
+        # cone_opening, track_origin, track_direction = best_params
 
         print("\nOptimization complete.")
         print("Final parameters:")
@@ -753,6 +847,8 @@ def main():
         print(f"Track direction: {true_track_direction}")
 
         print(f"\nFinal Loss: {best_loss}")
+
+        log.plot_all()
 
 if __name__ == "__main__":
     stime = time.perf_counter()
