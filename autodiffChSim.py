@@ -24,7 +24,7 @@ import matplotlib.pyplot as plt
 
 warnings.filterwarnings("ignore", message="unhashable type: .*. Attempting to hash a tracer will lead to an error in a future JAX release.")
 
-Nphot = 100
+Nphot = 500
 
 def relative_angle(vector1, vector2):
     dot_product = np.dot(vector1, vector2)
@@ -345,7 +345,7 @@ def get_rays(track_origin, track_direction, cone_opening, Nphot):
     ray_vectors = jnp.array(ray_vectors)
     
     random_lengths = random.uniform(key, (Nphot, 1), minval=0, maxval=1)
-    ray_origins = jnp.ones((Nphot, 3)) * jnp.array(track_origin)
+    ray_origins = jnp.ones((Nphot, 3)) * jnp.array(track_origin)+ random_lengths * track_direction_np
     
     return ray_vectors, ray_origins
 
@@ -391,7 +391,7 @@ def differentiable_get_rays(track_origin, track_direction, cone_opening, Nphot, 
     # Generate ray origins
     key, subkey = random.split(key)
     random_lengths = random.uniform(subkey, (Nphot, 1), minval=0, maxval=1)
-    ray_origins = jnp.ones((Nphot, 3)) * track_origin #+ random_lengths * track_direction
+    ray_origins = jnp.ones((Nphot, 3)) * track_origin + random_lengths * track_direction
     
     return ray_vectors, ray_origins
 
@@ -654,7 +654,7 @@ def smooth_combined_loss_function(true_indices, true_times, cone_opening, track_
     
     #return 10. * avg_time_diff + avg_min_dist
     #return avg_min_dist
-    return 3*avg_time_diff+avg_min_dist
+    return 1*avg_time_diff+avg_min_dist
 
 def loss_function(true_indices, cone_opening, track_origin, track_direction, detector):
     simulated_histogram, simulated_indices = toy_mc_simulator(true_indices, cone_opening, track_origin, track_direction, detector)
@@ -735,7 +735,7 @@ def run_tests(detector, true_indices, true_times, detector_points, detector_radi
     cone_results = test_parameter('cone_opening', true_params, jnp.linspace(20, 60, 11))
 
     # Test 2: X component of track origin
-    origin_x_results = test_parameter('track_origin_x', true_params, jnp.linspace(-1, 1, Nsteps), 0)
+    origin_x_results = test_parameter('track_origin_x', true_params, jnp.linspace(0, 2, Nsteps), 0)
 
     # Test 3: Y component of track direction
     direction_y_results = test_parameter('track_direction_y', true_params, jnp.linspace(-0.4, 0.4, Nsteps), 1)
@@ -763,7 +763,7 @@ def main():
         print('Using data mode')
         # Use specific parameters for data generation
         true_cone_opening = 40.
-        true_track_origin = np.array([0., 0., 0.])
+        true_track_origin = np.array([1., 0., 0.])
         true_track_direction = np.array([1., 0., 0.])
         generate_data(json_filename, output_filename, true_cone_opening, true_track_origin, true_track_direction)
 
@@ -863,10 +863,10 @@ def main():
                 detector_points, detector_radius, Nphot, key, args.use_time_loss
             )
 
-            Scale = 0.03
+            Scale = 0.1
 
-            cone_opening -= Scale*50*grad_cone
-            track_origin -= Scale*0.2*grad_origin
+            cone_opening -= Scale*100*grad_cone
+            track_origin -= Scale*0.4*grad_origin
             track_direction -= Scale*0.5*grad_direction
 
 
