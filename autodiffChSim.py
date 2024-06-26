@@ -56,7 +56,7 @@ class Logger:
         self.directions.append(direction)
         self.losses.append(float(loss))
         self.dir_err.append(relative_angle(true_dir, direction))
-        print('dir error: ', true_dir, direction, self.dir_err[-1])
+        #print('dir error: ', true_dir, direction, self.dir_err[-1])
         self.ori_err.append(50.*np.linalg.norm(true_ori-origin))
         self.ch_angles.append(ch_angle)
         self.ch_angles_err.append(true_ch_angle-ch_angle)
@@ -537,28 +537,89 @@ def smooth_distance_based_loss_function(true_indices, cone_opening, track_origin
     # Return the mean of these soft minimum distances as the loss
     return jnp.mean(soft_min_distances)
 
-@partial(jax.jit, static_argnums=(7,))
-def smooth_time_based_loss_function(true_indices, true_times, cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key):
-    simulated_points, closest_detector_indices, photon_times = differentiable_toy_mc_simulator(
-        cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key
-    )
+# @partial(jax.jit, static_argnums=(7,))
+# def smooth_combined_loss_function(true_indices, true_times, cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key):
+#     simulated_points, closest_detector_indices, photon_times = differentiable_toy_mc_simulator(
+#         cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key
+#     )
     
-    true_hit_positions = detector_points[true_indices]
+#     true_hit_positions = detector_points[true_indices]
     
-    # Compute distances from each simulated point to all true hit positions
-    distances = jnp.linalg.norm(simulated_points[:, None, :] - true_hit_positions[None, :, :], axis=-1)
+#     # Compute distances from each simulated point to all true hit positions
+#     distances = jnp.linalg.norm(simulated_points[:, None, :] - true_hit_positions[None, :, :], axis=-1)
     
-    # Use softmin for a smooth approximation of the closest hit
-    soft_weights = jax.nn.softmax(-distances / 0.1, axis=1)  # Temperature parameter can be adjusted
+#     # Use softmin instead of min
+#     soft_min_distances = jax.vmap(softmin)(distances)
+
+#     # Compute time differences for each simulated photon to each true hit
+#     time_differences = jnp.abs(photon_times[:, None] - true_times[None, :])
     
-    # Compute weighted average of true hit times
-    weighted_true_times = jnp.sum(soft_weights * true_times[None, :], axis=1)
+#     # Compute weights based on distances
+#     weights = jax.nn.softmax(-distances / 0.01, axis=1)  # Temperature parameter can be adjusted
     
-    # Calculate time differences
-    time_differences = jnp.abs(photon_times - weighted_true_times)
+#     # Compute weighted average of time differences
+#     weighted_time_differences = jnp.sum(weights * time_differences, axis=1)
     
-    # Return the mean of these time differences as the loss
-    return jnp.mean(time_differences)
+#     # Return the mean of these weighted time differences as the loss
+#     return jnp.mean(weighted_time_differences)#+jnp.mean(soft_min_distances)
+
+
+# @partial(jax.jit, static_argnums=(7,))
+# def smooth_combined_loss_function(true_indices, true_times, cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key):
+#     simulated_points, closest_detector_indices, photon_times = differentiable_toy_mc_simulator(
+#         cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key
+#     )
+    
+#     true_hit_positions = detector_points[true_indices]
+    
+#     # Compute distances from each simulated point to all true hit positions
+#     distances = jnp.linalg.norm(simulated_points[:, None, :] - true_hit_positions[None, :, :], axis=-1)
+    
+#     # Use softmin instead of min
+#     soft_min_distances = jax.vmap(softmin)(distances)
+
+#     # Use softmin for a smooth approximation of the closest hit
+#     soft_weights = jax.nn.softmax(-distances / 0.01, axis=1)  # Temperature parameter can be adjusted
+    
+#     # Compute weighted average of true hit times
+#     weighted_true_times = jnp.sum(soft_weights * true_times[None, :], axis=1)/jnp.sum(soft_weights)
+    
+#     # Calculate time differences
+#     time_differences = jnp.abs(photon_times - weighted_true_times)
+    
+#     # Return the mean of these time differences as the loss
+#     #return jnp.mean(soft_min_distances)
+#     return jnp.mean(time_differences)
+#     #return jnp.mean(time_differences)*jnp.mean(soft_min_distances)
+#     #return jnp.mean(soft_min_distances)
+
+
+# @partial(jax.jit, static_argnums=(7,))
+# def smooth_combined_loss_function(true_indices, true_times, cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key):
+#     simulated_points, closest_detector_indices, photon_times = differentiable_toy_mc_simulator(
+#         cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key
+#     )
+    
+#     true_hit_positions = detector_points[true_indices]
+    
+#     # Compute distances from each simulated point to all true hit positions
+#     distances = jnp.linalg.norm(simulated_points[:, None, :] - true_hit_positions[None, :, :], axis=-1)
+    
+#     # Use softmin instead of min
+#     soft_min_distances = jax.vmap(softmin)(distances)
+
+#     # Compute time differences for each simulated photon to each true hit
+#     time_differences = jnp.abs(photon_times[:, None] - true_times[None, :])
+    
+#     # Compute weights based on distances
+#     weights = jax.nn.softmax(-distances / 0.1, axis=1)  # Temperature parameter can be adjusted
+    
+#     # Compute weighted average of time differences
+#     weighted_time_differences = jnp.sum(weights * time_differences, axis=1)#/jnp.sum(weights)
+    
+#     # Return the mean of these weighted time differences as the loss
+#     #return 10.*jnp.mean(weighted_time_differences) + jnp.mean(soft_min_distances)
+#     return np.mean(weighted_time_differences)
 
 
 @partial(jax.jit, static_argnums=(7,))
@@ -572,21 +633,28 @@ def smooth_combined_loss_function(true_indices, true_times, cone_opening, track_
     # Compute distances from each simulated point to all true hit positions
     distances = jnp.linalg.norm(simulated_points[:, None, :] - true_hit_positions[None, :, :], axis=-1)
     
-    # Use softmin instead of min
-    soft_min_distances = jax.vmap(softmin)(distances)
-
-    # Use softmin for a smooth approximation of the closest hit
-    soft_weights = jax.nn.softmax(-distances / 0.1, axis=1)  # Temperature parameter can be adjusted
+    # Compute time differences for each simulated photon to each true hit
+    time_differences = jnp.abs(photon_times[:, None] - true_times[None, :])
     
-    # Compute weighted average of true hit times
-    weighted_true_times = jnp.sum(soft_weights * true_times[None, :], axis=1)
+    # Compute weights using a more robust method
+    max_distance = jnp.max(distances, axis=1, keepdims=True)
+    normalized_distances = distances / max_distance
+    weights = jnp.exp(-normalized_distances / 0.1)  # 0.1 is a softness parameter, adjust as needed
+    weights = weights / jnp.sum(weights, axis=1, keepdims=True)
     
-    # Calculate time differences
-    time_differences = jnp.abs(photon_times - weighted_true_times)
+    # Compute weighted average of time differences
+    weighted_time_differences = jnp.sum(weights * time_differences, axis=1)
     
-    # Return the mean of these time differences as the loss
-    return jnp.mean(time_differences)+jnp.mean(soft_min_distances)
-
+    # Compute spatial component using minimum distances
+    min_distances = jnp.min(distances, axis=1)
+    
+    # Normalize and combine the components
+    avg_time_diff = jnp.mean(weighted_time_differences)
+    avg_min_dist = jnp.mean(min_distances)
+    
+    #return 10. * avg_time_diff + avg_min_dist
+    #return avg_min_dist
+    return 3*avg_time_diff+avg_min_dist
 
 def loss_function(true_indices, cone_opening, track_origin, track_direction, detector):
     simulated_histogram, simulated_indices = toy_mc_simulator(true_indices, cone_opening, track_origin, track_direction, detector)
@@ -667,7 +735,7 @@ def run_tests(detector, true_indices, true_times, detector_points, detector_radi
     cone_results = test_parameter('cone_opening', true_params, jnp.linspace(20, 60, 11))
 
     # Test 2: X component of track origin
-    origin_x_results = test_parameter('track_origin_x', true_params, jnp.linspace(-0.4, 0.4, Nsteps), 0)
+    origin_x_results = test_parameter('track_origin_x', true_params, jnp.linspace(-1, 1, Nsteps), 0)
 
     # Test 3: Y component of track direction
     direction_y_results = test_parameter('track_direction_y', true_params, jnp.linspace(-0.4, 0.4, Nsteps), 1)
@@ -757,14 +825,17 @@ def main():
         log = Logger()
 
         # Start with random parameters for inference
-        # cone_opening = np.random.uniform(40., 40)
-        # track_origin = np.random.uniform(-0., 0., size=3)
-        # #track_direction = normalize(np.random.uniform(-1., 1., size=3))
-        # track_direction = normalize(np.array([0,1,0]))
-
         cone_opening = np.random.uniform(30., 50)
         track_origin = np.random.uniform(-1., 1., size=3)
         track_direction = normalize(np.random.uniform(-1., 1., size=3))
+
+        # cone_opening = np.random.uniform(45., 45)
+        # track_origin = np.array([1.,0.,0.]) 
+        # track_direction = normalize(np.array([0.,1.,1.]))
+
+        # cone_opening = np.random.uniform(40., 40)
+        # track_origin = np.array([0.,0.,1.]) 
+        # track_direction = normalize(np.array([1.,0.,0.]))
 
         key = random.PRNGKey(0)
 
@@ -774,7 +845,7 @@ def main():
         loss_and_grad = jax.value_and_grad(combined_loss_function, argnums=(2, 3, 4))
 
         # Optimization parameters
-        num_iterations = 100
+        num_iterations = 300
         patience = 50  # number of iterations to wait before early stopping
         min_delta = 1e-6  # minimum change in loss to qualify as an improvement
         
@@ -792,10 +863,28 @@ def main():
                 detector_points, detector_radius, Nphot, key, args.use_time_loss
             )
 
+            Scale = 0.03
 
-            cone_opening -= 10*grad_cone
-            track_origin -= 0.1*grad_origin
-            track_direction -= 0.05*grad_direction
+            cone_opening -= Scale*50*grad_cone
+            track_origin -= Scale*0.2*grad_origin
+            track_direction -= Scale*0.5*grad_direction
+
+
+            #track_origin -= Scale*2*grad_origin
+
+            # if loss<1.5:
+            #     cone_opening -= 10*grad_cone
+            #     track_origin -= 0.1*grad_origin
+            #     track_direction -= 0.03*grad_direction
+            # else:
+            #     cone_opening -= 10*grad_cone
+            #     track_direction -= 0.03*grad_direction
+
+            #print(grad_origin,grad_direction,grad_cone)
+
+
+
+            # track_origin -= 0.1*grad_origin
 
             log.add_data(track_origin, track_direction, true_track_direction, true_track_origin, cone_opening, true_cone_opening, loss)
 
