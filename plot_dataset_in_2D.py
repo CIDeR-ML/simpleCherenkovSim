@@ -67,7 +67,7 @@ else:
     Qs  = evt_hit_Qs[evt_hit_idx[evt_ID-1]:evt_hit_idx[evt_ID]]
     Ts  = evt_hit_Ts[evt_hit_idx[evt_ID-1]:evt_hit_idx[evt_ID]]
 
-print("aaaa: ", len(detector.all_points))
+print("Number of PMTs: ", len(detector.all_points))
 
 ID_to_PE = np.zeros(len(detector.all_points))
 ID_to_PE[IDs] = Qs

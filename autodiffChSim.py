@@ -56,36 +56,30 @@ class Logger:
         self.directions.append(direction)
         self.losses.append(float(loss))
         self.dir_err.append(relative_angle(true_dir, direction))
-        #print('dir error: ', true_dir, direction, self.dir_err[-1])
-        self.ori_err.append(50.*np.linalg.norm(true_ori-origin))
+        self.ori_err.append(np.linalg.norm(true_ori-origin))
         self.ch_angles.append(ch_angle)
         self.ch_angles_err.append(true_ch_angle-ch_angle)
 
-    def plot_err(self):
-        plt.plot(range(len(self.ori_err[1:])), self.ori_err[1:], label='distance (a.u.)', color='cornflowerblue')
-        plt.plot(range(len(self.dir_err[1:])), self.dir_err[1:], label='angle (degrees) ', color='darkorange')
+    def plot_angle_err(self):
+        plt.plot(range(len(self.dir_err[1:])), self.dir_err[1:], label='Direction angle error', color='darkorange')
         plt.gca().set_xlabel('Iterations')
-        plt.gca().set_ylabel('Error')
-        plt.xlim(0, len(self.losses))
-        plt.ylim(bottom=-0.1, top=max(max(self.ori_err[1:]), max(self.dir_err[1:])) * 1.3) # Adjust y-axis limits
+        plt.gca().set_ylabel('Angle Error (degrees)')
         plt.legend(frameon=False, loc='best')
         plt.ylim(bottom=0.)
 
-    # def plot_norm(self):
-    #     plt.plot(range(len(self.norms[1:])), self.norms[1:], color='limegreen')
-    #     plt.gca().set_xlabel('Iterations')
-    #     plt.gca().set_ylabel('Normalization')
-    #     plt.axhline(self.expected_norm, color = 'darkgray', linestyle = '--', label='expected')
-    #     plt.xlim(0, len(self.losses))
-    #     plt.ylim(bottom=min(self.expected_norm, min(self.norms[1:])) / 1.43, top=max(self.expected_norm, max(self.norms[1:])) * 1.3) # Adjust y-axis limits
-    #     plt.legend(frameon=False, loc='best')
+    def plot_distance_err(self):
+        plt.plot(range(len(self.ori_err[1:])), self.ori_err[1:], label='Origin distance error', color='cornflowerblue')
+        plt.gca().set_xlabel('Iterations')
+        plt.gca().set_ylabel('Distance Error (meters)')
+        plt.legend(frameon=False, loc='best')
+        plt.ylim(bottom=0.)
 
     def plot_ch_angle(self):
         self.expected_cone_opening = 40
         plt.plot(range(len(self.ch_angles[1:])), self.ch_angles[1:], color='hotpink')
-        plt.axhline(self.expected_cone_opening, color = 'darkgray', linestyle = '--', label='expected')
+        plt.axhline(self.expected_cone_opening, color='darkgray', linestyle='--', label='expected')
         plt.xlim(1, len(self.losses))
-        plt.ylim(bottom=min(self.expected_cone_opening, min(self.ch_angles[1:])) / 1.43, top=max(self.expected_cone_opening, max(self.ch_angles[1:])) * 1.3) # Adjust y-axis limits
+        plt.ylim(bottom=min(self.expected_cone_opening, min(self.ch_angles[1:])) / 1.43, top=max(self.expected_cone_opening, max(self.ch_angles[1:])) * 1.3)
         plt.gca().set_xlabel('Iterations')
         plt.gca().set_ylabel('Cone Opening')
         plt.legend(frameon=False, loc='best')
@@ -98,22 +92,23 @@ class Logger:
         plt.yscale('log')
 
     def plot_all(self):
-        plt.figure(figsize=(8, 6))
+        plt.figure(figsize=(12, 9))
 
         plt.subplot(2, 2, 1)
-        self.plot_err()
+        self.plot_angle_err()
 
         plt.subplot(2, 2, 2)
-        self.plot_ch_angle()
+        self.plot_distance_err()
 
         plt.subplot(2, 2, 3)
-        self.plot_loss()
+        self.plot_ch_angle()
 
         plt.subplot(2, 2, 4)
-        plt.gca().axis('off')
+        self.plot_loss()
 
         plt.tight_layout()
         plt.show()
+
 
 class Adam:
     def __init__(self, learning_rate=0.001, beta1=0.9, beta2=0.999, epsilon=1e-8):
@@ -825,17 +820,17 @@ def main():
         log = Logger()
 
         # Start with random parameters for inference
-        cone_opening = np.random.uniform(30., 50)
-        track_origin = np.random.uniform(-1., 1., size=3)
-        track_direction = normalize(np.random.uniform(-1., 1., size=3))
+        # cone_opening = np.random.uniform(40., 40)
+        # track_origin = np.random.uniform(-1., 1., size=3)
+        # track_direction = normalize(np.random.uniform(-1., 1., size=3))
 
         # cone_opening = np.random.uniform(45., 45)
         # track_origin = np.array([1.,0.,0.]) 
         # track_direction = normalize(np.array([0.,1.,1.]))
 
-        # cone_opening = np.random.uniform(40., 40)
-        # track_origin = np.array([0.,0.,1.]) 
-        # track_direction = normalize(np.array([1.,0.,0.]))
+        cone_opening = np.random.uniform(40., 40)
+        track_origin = np.array([1.,0.,0.]) 
+        track_direction = normalize(np.array([1.,0.,0.]))
 
         key = random.PRNGKey(0)
 
@@ -845,7 +840,7 @@ def main():
         loss_and_grad = jax.value_and_grad(combined_loss_function, argnums=(2, 3, 4))
 
         # Optimization parameters
-        num_iterations = 300
+        num_iterations = 2
         patience = 50  # number of iterations to wait before early stopping
         min_delta = 1e-6  # minimum change in loss to qualify as an improvement
         
@@ -863,9 +858,9 @@ def main():
                 detector_points, detector_radius, Nphot, key, args.use_time_loss
             )
 
-            Scale = 0.1
+            Scale = 0.1#*loss/6.
 
-            cone_opening -= Scale*100*grad_cone
+            #cone_opening -= Scale*100*grad_cone
             track_origin -= Scale*0.4*grad_origin
             track_direction -= Scale*0.5*grad_direction
 
@@ -936,6 +931,9 @@ def main():
         print(f"Track direction: {true_track_direction}")
 
         print(f"\nFinal Loss: {best_loss}")
+
+        filename = 'test_events/optimization_result.h5'
+        generate_and_store_event(filename, cone_opening, track_origin, track_direction, detector, Nphot)
 
         log.plot_all()
 

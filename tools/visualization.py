@@ -26,10 +26,16 @@ def show_2D_display(ID_to_position, ID_to_PE, ID_to_case, cyl_sensor_radius, cyl
     corr = cyl_radius/cyl_height
     caps_offset = -0.1
 
+    all_pos = []
+
+
     for ID in list(ID_to_position.keys()):
         pos   = ID_to_position[ID]
         PE    = ID_to_PE[ID]
         case  = ID_to_case[ID]
+
+        if PE:
+            all_pos.append(pos)
 
         #barrel
         if case ==0:
@@ -49,6 +55,11 @@ def show_2D_display(ID_to_position, ID_to_PE, ID_to_case, cyl_sensor_radius, cyl
             ax.add_patch(plt.Circle((corr*pos[0]/cyl_height+np.pi/2,-1+corr*(-caps_offset-pos[1]/cyl_height)), cyl_sensor_radius/cyl_height, color=color_gradient.to_rgba(PE)))
 
     margin = 0.05
+
+    all_pos = np.array(all_pos)
+    print(min(all_pos[:,0]),max(all_pos[:,0]))
+    print(min(all_pos[:,1]),max(all_pos[:,1]))
+    print(min(all_pos[:,2]),max(all_pos[:,2]))
 
     ax.set_facecolor("black")
 
