@@ -177,37 +177,6 @@ def generate_vectors_on_cone_surface_jax(R, theta, num_vectors=10, key=random.PR
     
     return rotated_vectors
 
-@jax.jit
-def rotate_vector_batch_jax(vectors, axis, angle):
-    """ Rotate multiple vectors by specified angle around the given axis. """
-    axis_normalized = axis / jnp.linalg.norm(axis)
-    
-    # Quaternion rotation
-    sin_half_angle = jnp.sin(angle / 2)
-    cos_half_angle = jnp.cos(angle / 2)
-    quaternion = jnp.concatenate([axis_normalized * sin_half_angle, jnp.array([cos_half_angle])])
-    
-    # Pad vectors to quaternions
-    vector_quaternions = jnp.pad(vectors, ((0, 0), (1, 0)))
-    
-    # Quaternion multiplication
-    def quaternion_multiply(q1, q2):
-        w1, x1, y1, z1 = jnp.split(q1, 4, axis=-1)
-        w2, x2, y2, z2 = jnp.split(q2, 4, axis=-1)
-        return jnp.concatenate([
-            w1*x2 + x1*w2 + y1*z2 - z1*y2,
-            w1*y2 - x1*z2 + y1*w2 + z1*x2,
-            w1*z2 + x1*y2 - y1*x2 + z1*w2,
-            w1*w2 - x1*x2 - y1*y2 - z1*z2
-        ], axis=-1)
-    
-    rotated_quaternions = quaternion_multiply(
-        quaternion_multiply(quaternion, vector_quaternions),
-        jnp.concatenate([-axis_normalized * sin_half_angle, jnp.array([cos_half_angle])])
-    )
-    
-    return rotated_quaternions[..., 1:]
-
 def check_hits_vectorized_per_track_jax(ray_origin, ray_direction, sensor_radius, points):
     # Ensure inputs are JAX arrays
     ray_origin_jax = jnp.array(ray_origin, dtype=jnp.float32)
@@ -245,74 +214,6 @@ def check_hits_vectorized_per_track_jax(ray_origin, ray_direction, sensor_radius
 
     return sensor_indices, hit_flag, closest_points_on_ray
 
-def generate_data(json_filename, output_filename, cone_opening, track_origin, track_direction):
-    # Generate detector (photsensor placements)
-    detector = generate_detector(json_filename)
-    N_photosensors = len(detector.all_points)
-
-    print('Generating data dataset')
-
-    Nhits = 0 # this is a counter used to keep track on how many hits we have filled in total for every event.
-    Nevents = 1
-    Ntrk    = 1
-
-    os.makedirs(os.path.dirname(output_filename), exist_ok=True)
-
-    # Create the output h5 file and define some fields we can start filling.
-    f_outfile = h5py.File(output_filename, 'w')
-    h5_evt_ids     = f_outfile.create_dataset("evt_id",           shape=(Nevents,),    dtype=np.int32)
-    h5_evt_pos     = f_outfile.create_dataset("positions",        shape=(Nevents,1,3), dtype=np.float32)
-    h5_evt_hit_idx = f_outfile.create_dataset("event_hits_index", shape=(Nevents,),    dtype=np.int64)
-
-    f_outfile.create_dataset("true_cone_opening", data=np.array([cone_opening]))
-    f_outfile.create_dataset("true_track_origin", data=track_origin)
-    f_outfile.create_dataset("true_track_direction", data=track_direction)
-
-    maxNhits = Nevents * N_photosensors
-    h5_evt_hit_IDs_max = np.zeros(maxNhits)
-    h5_evt_hit_Qs_max  = np.zeros(maxNhits)
-    h5_evt_hit_Ts_max  = np.zeros(maxNhits)
-
-    pre_idx = 0
-    i_evt = 0
-    
-    ray_vectors, ray_origins = get_rays(track_origin, track_direction, cone_opening, Nphot)
-
-    # Use NumPy for calculations instead of JAX
-    detector_points = np.array(detector.all_points)
-    t = np.linspace(0, 10, 100)[:, None]
-    points_along_rays = ray_origins[:, None, :] + t * ray_vectors[:, None, :]
-
-    distances = np.linalg.norm(points_along_rays[:, :, None, :] - detector_points[None, None, :, :], axis=-1)
-    min_distances = np.min(distances, axis=1)
-    closest_detector_indices = np.argmin(min_distances, axis=1)
-
-    closest_points = points_along_rays[np.arange(Nphot), np.argmin(distances, axis=1)[np.arange(Nphot), closest_detector_indices]]
-    
-    # Calculate time for each photon (assuming speed of light = 1)
-    photon_times = np.linalg.norm(closest_points - ray_origins, axis=-1)
-
-    idx, cts = np.unique(closest_detector_indices, return_counts=True)
-    Nhits += len(idx)
-    h5_evt_hit_idx[i_evt] = Nhits
-    h5_evt_hit_IDs_max[pre_idx:Nhits] = idx
-    h5_evt_hit_Qs_max [pre_idx:Nhits] = cts
-    h5_evt_hit_Ts_max[pre_idx:Nhits] = [np.mean(photon_times[closest_detector_indices == i]) for i in idx]
-    pre_idx = Nhits
-
-    h5_evt_hit_IDs = f_outfile.create_dataset("hit_pmt",          shape=(Nhits,),      dtype=np.int32)
-    h5_evt_hit_Qs  = f_outfile.create_dataset("hit_charge",       shape=(Nhits,),      dtype=np.float32)
-    h5_evt_hit_Ts  = f_outfile.create_dataset("hit_time",         shape=(Nhits,),      dtype=np.float32)
-
-    h5_evt_hit_IDs[0:Nhits] = h5_evt_hit_IDs_max[0:Nhits]
-    h5_evt_hit_Qs[0:Nhits]  = h5_evt_hit_Qs_max [0:Nhits]
-    h5_evt_hit_Ts[0:Nhits]  = h5_evt_hit_Ts_max [0:Nhits]
-
-    print(f"Number of hits: {Nhits}")
-
-    f_outfile.close()
-    print('Data generation complete.')
-
 def load_data(filename):
     with h5py.File(filename, 'r') as f:
         hit_pmt = np.array(f['hit_pmt'])
@@ -325,57 +226,6 @@ def load_data(filename):
     print(hit_time)
 
     return hit_pmt, hit_charge, hit_time, true_cone_opening, true_track_origin, true_track_direction
-
-def get_rays(track_origin, track_direction, cone_opening, Nphot):
-    key = random.PRNGKey(0)
-    
-    # Convert inputs to NumPy arrays
-    track_direction_np = np.array(track_direction)
-    cone_opening_np = np.array(cone_opening)
-    
-    # Generate vectors using NumPy function
-    ray_vectors = generate_vectors_on_cone_surface_np(track_direction_np, np.radians(cone_opening_np), Nphot)
-    
-    # Convert to JAX arrays
-    ray_vectors = jnp.array(ray_vectors)
-    
-    random_lengths = random.uniform(key, (Nphot, 1), minval=0, maxval=1)
-    ray_origins = jnp.ones((Nphot, 3)) * jnp.array(track_origin)+ random_lengths * track_direction_np
-    
-    return ray_vectors, ray_origins
-
-def generate_vectors_on_cone_surface_np(R, theta, num_vectors=10):
-    R = R / np.linalg.norm(R)
-    
-    # Generate random azimuthal angles from 0 to 2pi
-    phi_values = np.random.uniform(0, 2 * np.pi, num_vectors)
-    
-    # Generate vectors in the local coordinate system
-    x_local = np.sin(theta) * np.cos(phi_values)
-    y_local = np.sin(theta) * np.sin(phi_values)
-    z_local = np.cos(theta) * np.ones_like(phi_values)
-    
-    local_vectors = np.stack([x_local, y_local, z_local], axis=-1)
-    
-    # Compute the rotation matrix to align [0, 0, 1] with R
-    v = np.cross(np.array([0., 0., 1.]), R)
-    s = np.linalg.norm(v)
-    c = R[2]  # dot product of [0, 0, 1] and R
-    
-    v_cross = np.array([
-        [0, -v[2], v[1]],
-        [v[2], 0, -v[0]],
-        [-v[1], v[0], 0]
-    ])
-    
-    rotation_matrix = np.eye(3) if s < 1e-6 else (
-        np.eye(3) + v_cross + np.dot(v_cross, v_cross) * (1 - c) / (s ** 2)
-    )
-    
-    # Apply the rotation to all vectors
-    rotated_vectors = np.einsum('ij,kj->ki', rotation_matrix, local_vectors)
-    
-    return rotated_vectors
 
 @partial(jax.jit, static_argnums=(3,))
 def differentiable_get_rays(track_origin, track_direction, cone_opening, Nphot, key):
@@ -414,7 +264,7 @@ def generate_rotation_matrix(vector):
                      jnp.where(cos_theta > 0, identity, flipped))
 
 
-def generate_and_store_event(filename, cone_opening, track_origin, track_direction, detector, Nphot):
+def generate_and_store_event(filename, cone_opening, track_origin, track_direction, detector, Nphot, key):
     N_photosensors = len(detector.all_points)
 
     os.makedirs(os.path.dirname(filename), exist_ok=True)
@@ -429,7 +279,8 @@ def generate_and_store_event(filename, cone_opening, track_origin, track_directi
         f_outfile.create_dataset("true_track_origin", data=track_origin)
         f_outfile.create_dataset("true_track_direction", data=track_direction)
 
-        ray_vectors, ray_origins = get_rays(track_origin, track_direction, cone_opening, Nphot)
+
+        ray_vectors, ray_origins = differentiable_get_rays(track_origin, track_direction, cone_opening, Nphot, key)# get_rays(track_origin, track_direction, cone_opening, Nphot)
 
         # Convert JAX arrays to NumPy arrays
         ray_origins_np = np.array(ray_origins)
@@ -507,115 +358,9 @@ def differentiable_toy_mc_simulator(cone_opening, track_origin, track_direction,
 def combined_loss_function(true_indices, true_times, cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key, use_time_loss):
     return smooth_combined_loss_function(true_indices, true_times, cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key)
 
-    # return jax.lax.cond(
-    #     use_time_loss,
-    #     lambda: smooth_time_based_loss_function(true_indices, true_times, cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key),
-    #     lambda: smooth_distance_based_loss_function(true_indices, cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key)
-    # )
-
 def softmin(x, alpha=1.0):
     exp_x = jnp.exp(-alpha * x)
     return jnp.sum(x * exp_x) / jnp.sum(exp_x)
-
-@partial(jax.jit, static_argnums=(6,))
-def smooth_distance_based_loss_function(true_indices, cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key):
-    simulated_points, _, _ = differentiable_toy_mc_simulator(cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key)
-    
-    true_hit_positions = detector_points[true_indices]
-    
-    # Compute distances from each simulated point to all true hit positions
-    distances = jnp.linalg.norm(simulated_points[:, None, :] - true_hit_positions[None, :, :], axis=-1)
-    
-    # Use softmin instead of min
-    soft_min_distances = jax.vmap(softmin)(distances)
-    
-    # Return the mean of these soft minimum distances as the loss
-    return jnp.mean(soft_min_distances)
-
-# @partial(jax.jit, static_argnums=(7,))
-# def smooth_combined_loss_function(true_indices, true_times, cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key):
-#     simulated_points, closest_detector_indices, photon_times = differentiable_toy_mc_simulator(
-#         cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key
-#     )
-    
-#     true_hit_positions = detector_points[true_indices]
-    
-#     # Compute distances from each simulated point to all true hit positions
-#     distances = jnp.linalg.norm(simulated_points[:, None, :] - true_hit_positions[None, :, :], axis=-1)
-    
-#     # Use softmin instead of min
-#     soft_min_distances = jax.vmap(softmin)(distances)
-
-#     # Compute time differences for each simulated photon to each true hit
-#     time_differences = jnp.abs(photon_times[:, None] - true_times[None, :])
-    
-#     # Compute weights based on distances
-#     weights = jax.nn.softmax(-distances / 0.01, axis=1)  # Temperature parameter can be adjusted
-    
-#     # Compute weighted average of time differences
-#     weighted_time_differences = jnp.sum(weights * time_differences, axis=1)
-    
-#     # Return the mean of these weighted time differences as the loss
-#     return jnp.mean(weighted_time_differences)#+jnp.mean(soft_min_distances)
-
-
-# @partial(jax.jit, static_argnums=(7,))
-# def smooth_combined_loss_function(true_indices, true_times, cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key):
-#     simulated_points, closest_detector_indices, photon_times = differentiable_toy_mc_simulator(
-#         cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key
-#     )
-    
-#     true_hit_positions = detector_points[true_indices]
-    
-#     # Compute distances from each simulated point to all true hit positions
-#     distances = jnp.linalg.norm(simulated_points[:, None, :] - true_hit_positions[None, :, :], axis=-1)
-    
-#     # Use softmin instead of min
-#     soft_min_distances = jax.vmap(softmin)(distances)
-
-#     # Use softmin for a smooth approximation of the closest hit
-#     soft_weights = jax.nn.softmax(-distances / 0.01, axis=1)  # Temperature parameter can be adjusted
-    
-#     # Compute weighted average of true hit times
-#     weighted_true_times = jnp.sum(soft_weights * true_times[None, :], axis=1)/jnp.sum(soft_weights)
-    
-#     # Calculate time differences
-#     time_differences = jnp.abs(photon_times - weighted_true_times)
-    
-#     # Return the mean of these time differences as the loss
-#     #return jnp.mean(soft_min_distances)
-#     return jnp.mean(time_differences)
-#     #return jnp.mean(time_differences)*jnp.mean(soft_min_distances)
-#     #return jnp.mean(soft_min_distances)
-
-
-# @partial(jax.jit, static_argnums=(7,))
-# def smooth_combined_loss_function(true_indices, true_times, cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key):
-#     simulated_points, closest_detector_indices, photon_times = differentiable_toy_mc_simulator(
-#         cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key
-#     )
-    
-#     true_hit_positions = detector_points[true_indices]
-    
-#     # Compute distances from each simulated point to all true hit positions
-#     distances = jnp.linalg.norm(simulated_points[:, None, :] - true_hit_positions[None, :, :], axis=-1)
-    
-#     # Use softmin instead of min
-#     soft_min_distances = jax.vmap(softmin)(distances)
-
-#     # Compute time differences for each simulated photon to each true hit
-#     time_differences = jnp.abs(photon_times[:, None] - true_times[None, :])
-    
-#     # Compute weights based on distances
-#     weights = jax.nn.softmax(-distances / 0.1, axis=1)  # Temperature parameter can be adjusted
-    
-#     # Compute weighted average of time differences
-#     weighted_time_differences = jnp.sum(weights * time_differences, axis=1)#/jnp.sum(weights)
-    
-#     # Return the mean of these weighted time differences as the loss
-#     #return 10.*jnp.mean(weighted_time_differences) + jnp.mean(soft_min_distances)
-#     return np.mean(weighted_time_differences)
-
 
 @partial(jax.jit, static_argnums=(7,))
 def smooth_combined_loss_function(true_indices, true_times, cone_opening, track_origin, track_direction, detector_points, detector_radius, Nphot, key):
@@ -647,32 +392,7 @@ def smooth_combined_loss_function(true_indices, true_times, cone_opening, track_
     avg_time_diff = jnp.mean(weighted_time_differences)
     avg_min_dist = jnp.mean(min_distances)
     
-    #return 10. * avg_time_diff + avg_min_dist
-    #return avg_min_dist
-    return 1*avg_time_diff+avg_min_dist
-
-def loss_function(true_indices, cone_opening, track_origin, track_direction, detector):
-    simulated_histogram, simulated_indices = toy_mc_simulator(true_indices, cone_opening, track_origin, track_direction, detector)
-    
-    # Create true histogram
-    true_histogram = jnp.zeros(len(detector.all_points), dtype=jnp.int32)
-    true_counts = jnp.bincount(true_indices, length=len(detector.all_points))
-    true_histogram = true_histogram.at[true_indices].set(true_counts[true_indices])
-    
-    # Combine true and simulated indices
-    all_indices = jnp.unique(jnp.concatenate([true_indices, simulated_indices]))
-    
-    # Compare only at hit positions
-    true_hits = true_histogram[all_indices]
-    simulated_hits = simulated_histogram[all_indices]
-    
-    print("Shape of true_hits:", true_hits.shape)
-    print("Shape of simulated_hits:", simulated_hits.shape)
-
-    print(true_hits[0:100])
-    print(simulated_hits[0:100])
-    
-    return jnp.mean((simulated_hits - true_hits)**2)
+    return avg_time_diff+avg_time_diff
 
 def run_tests(detector, true_indices, true_times, detector_points, detector_radius, Nphot, true_params, use_time_loss):
     def test_parameter(param_name, true_params, param_range, param_index=None):
@@ -713,7 +433,7 @@ def run_tests(detector, true_indices, true_times, detector_points, detector_radi
             
             # Generate and store event
             event_filename = f'test_events/{param_name}_step_{i}.h5'
-            generate_and_store_event(event_filename, *params, detector, Nphot)
+            generate_and_store_event(event_filename, *params, detector, Nphot, key)
             
             results.append({
                 'param_value': param_value,
@@ -760,7 +480,11 @@ def main():
         true_cone_opening = 40.
         true_track_origin = np.array([1., 0., 0.])
         true_track_direction = np.array([1., 0., 0.])
-        generate_data(json_filename, output_filename, true_cone_opening, true_track_origin, true_track_direction)
+        #generate_data(json_filename, output_filename, true_cone_opening, true_track_origin, true_track_direction)
+
+        detector = generate_detector(json_filename)
+        key = random.PRNGKey(0)
+        generate_and_store_event(output_filename, true_cone_opening, true_track_origin, true_track_direction, detector, Nphot, key)
 
     elif args.test:
         print('Running tests')
@@ -771,10 +495,6 @@ def main():
         detector_radius = detector.S_radius
         
         true_params = [true_cone_opening, true_track_origin, true_track_direction]
-
-        # Generate event with true parameters
-        true_event_filename = 'test_events/true_event.h5'
-        generate_and_store_event(true_event_filename, *true_params, detector, Nphot)
 
         cone_results, origin_x_results, direction_y_results = run_tests(
             detector, true_indices, true_times, detector_points, detector_radius, Nphot, true_params, args.use_time_loss
